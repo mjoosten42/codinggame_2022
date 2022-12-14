@@ -1,0 +1,13 @@
+[package]
+name = "coding_game_2022"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[build-dependencies]
+rustsourcebundler = { git = "https://github.com/lpenz/rust-sourcebundler" }
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+grid = "0.9.0"
