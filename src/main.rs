@@ -1,7 +1,26 @@
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, fmt};
+use rand::{thread_rng, seq::SliceRandom};
 
 macro_rules! parse_input {
 	($x:expr, $t:ident) => ($x.trim().parse::<$t>().unwrap())
+}
+
+macro_rules! MOVE {
+	($actions:expr, $amount:expr, $from:expr, $to:expr) => {
+		$actions.add(format!("MOVE {} {} {} {} {}", $amount, $from.x, $from.y, $to.x, $to.y));
+	};
+}
+
+macro_rules! BUILD {
+	($actions:expr, $pos:expr) => {
+		$actions.add(format!("BUILD {} {}", $pos.x, $pos.y));
+	};
+}
+
+macro_rules! SPAWN {
+	($actions:expr, $amount:expr, $pos:expr) => {
+		$actions.add(format!("SPAWN {} {} {}", $amount, $pos.x, $pos.y));
+	};
 }
 
 struct Actions {
@@ -35,14 +54,32 @@ struct Point {
 	y: usize,
 }
 
-#[derive(Copy, Clone, PartialEq)]
+impl Point {
+	fn from(x: usize, y: usize) -> Self {
+		Point { x: x, y: y }
+	}
+}
+
+impl fmt::Display for Point {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "[{}, {}]", self.x, self.y)
+	}
+}
+
+impl fmt::Debug for Point {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "[{}, {}]", self.x, self.y)
+	}
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
 enum Owner {
 	Ally,
 	Enemy,
 	Neutral,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 struct Patch {
 	position: Point,
 
@@ -58,7 +95,7 @@ struct Patch {
 impl Patch {
 	fn from(x: usize, y: usize) -> Self {
 		Patch {
-			position: Point { x: x, y: y },
+			position: Point::from(x, y),
 			scrap: 0,
 			owner: Owner::Neutral,
 			units: 0,
@@ -68,65 +105,86 @@ impl Patch {
 			in_range_of_recycler: false
 		}
 	}
+}
 
-	fn pos(&self) -> Point {
-		self.position
+impl fmt::Display for Patch {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "[{}, {}]", self.position.x, self.position.y)
 	}
 }
 
 fn main() {
+	const COST: i32 = 10;
 	let inputs = get_inputs();
 	let width = parse_input!(inputs[0], usize);
 	let height = parse_input!(inputs[1], usize);
 
-	let mut grid: Vec<Vec<Patch>> = (0..height).map(|_| (0..width).map(|_| Patch::from(width, height)).collect()).collect();
+	let mut grid: Vec<Vec<Patch>> = (0..height).map(|j| (0..width).map(|i| Patch::from(i, j)).collect()).collect();
 
 	loop {
-		let mut actions:Actions = Actions::new();
+		let mut actions: Actions = Actions::new();
 		let mut my_matter = update_input(&mut grid, width, height);
 
-		let mut targets: Vec<(usize, usize)> = Vec::new();
 		for y in 0..height {
 			for x in 0..width {
-				let patch = &mut grid[y][x];
+				let patch = grid[y][x];
 
-				// Build recycler if noone in range
-				if patch.owner == Owner::Ally && !patch.in_range_of_recycler && patch.units == 0 && my_matter >= 10 {
-					actions.add(format!("BUILD {} {}", x, y));
-					my_matter -= 10;
-					patch.recycler = true;
+				eprintln!("{patch:?}");
+				// Building recyclers
+				if patch.owner == Owner::Ally && !patch.in_range_of_recycler && my_matter >= 10 {
+					// if adjacent(patch.position, &grid).iter().all(|p| {
+					// 	grid[p.y][p.x].owner != Owner::Ally || grid[p.y][p.x].units == 0
+					// }) {
+						eprintln!("building");
+						BUILD!(actions, patch.position);
+						my_matter -= 10;
+					// }
 				}
-
-				// Move away from owned tiles
-				if patch.owner == Owner::Ally {
-					if x >= 2 && x < width && y >= 2 && y < height { targets.push((x - 2, y - 2)); }
-					if x + 2 < width && y >= 2 && y < height { targets.push((x + 2, y - 2)); }
-					if x >= 2 && x < width && y + 2 < height { targets.push((x - 2, y + 2)); }
-					if x + 2 < width && y + 2 < height { targets.push((x + 2, y + 2)); }
-				}
-				if patch.owner == Owner::Ally {
+				
+				// Moving units
+				if patch.owner == Owner::Ally && patch.units > 0{
 					for _ in 0..patch.units {
-						if !targets.is_empty() {
-							let target = targets.pop().unwrap();
-							actions.add(format!("MOVE 1 {} {} {} {}", x, y, target.0, target.1));
+
+						let target = nearest_where(&grid, patch.position, |p| {
+							p.owner != Owner::Ally && !p.recycler
+						});
+						if target.is_some() {
+							let point = target.unwrap();
+							grid[point.y][point.x].owner = Owner::Ally;
+							if patch.owner == Owner::Enemy {
+								grid[point.y][point.x].units = 0; // TODO
+							}
+							MOVE!(actions, 1, patch.position, point);
 						}
 					}
 				}
 			}
 		}
 
+		let middle = nearest_where(&grid, Point::from(width / 2, height / 2), |p| p.can_spawn);
+		if middle.is_some() {
+			SPAWN!(actions, my_matter / COST, middle.unwrap());
+		}
+
+
 		actions.flush();
 	}
 }
 
-fn nearest_unowned(grid: &mut Vec<Vec<Patch>>, point: Point) {
-	let mut edges = vec![point; 1];
-	let mut visited: BTreeSet<Point> = edges.iter().map(|p| p.clone()).collect();
+fn nearest_where<F>(grid: &Vec<Vec<Patch>>, point: Point, f: F) -> Option<Point> where
+	F: Fn(&Patch) -> bool {
 	
-	loop {
+	let mut edges = vec![point; 1];
+	let mut visited: BTreeSet<Point> = vec![point; 1].into_iter().collect();
+	
+	while !edges.is_empty() {
 		let mut new: Vec<Point> = Vec::new();
 		for edge in &edges {
-			let nb = neighbors(grid, *edge);
+			let patch = &grid[edge.y][edge.x];
+			if f(patch) {
+				return Some(edge.clone())
+			}
+			let nb = adjacent(*edge, grid);
 			for point in nb {
 				if !visited.contains(&point) {
 					new.push(point);
@@ -136,18 +194,28 @@ fn nearest_unowned(grid: &mut Vec<Vec<Patch>>, point: Point) {
 		}
 		edges = new;
 	}
+	None
 }
 
-fn neighbors(grid: &mut Vec<Vec<Patch>>, point: Point) -> Vec<Point> {
-	let mut nb = Vec::new();
-	let width = grid.first().unwrap().len();
-	let height = grid.len();
+fn adjacent(point: Point, grid: &Vec<Vec<Patch>>) -> Vec<Point> {
+	let adj = adjacent_tiles(point);
+	
+	adj.iter().filter_map(|tile| {
+		let row = grid.iter().nth(tile.1 as usize)?;
+		row.iter().nth(tile.0 as usize)?;
+		Some(Point { x: tile.0 as usize, y: tile.1 as usize })
+	}).collect()
+}
 
-	if point.x + 1 < width { nb.push(Point { x: point.x + 1, y: point.y })}
-	if point.x >= 1 { nb.push(Point { x: point.x - 1, y: point.y })}
-	if point.y + 1 < height { nb.push(Point { x: point.x, y: point.y + 1 })}
-	if point.y >= 1 { nb.push(Point { x: point.x + 1, y: point.y - 1})}
-	nb
+fn adjacent_tiles(point: Point) -> Vec<(i32, i32)> {
+	let mut adj: Vec<(i32, i32)> = vec![
+		(point.x as i32 + 1, point.y as i32),
+		(point.x as i32, point.y as i32 + 1),
+		(point.x as i32 - 1, point.y as i32),
+		(point.x as i32, point.y as i32 - 1)
+	];
+	adj.shuffle(&mut thread_rng());
+	adj
 }
 
 // Input
@@ -155,14 +223,16 @@ fn update_input(grid: &mut Vec<Vec<Patch>>, width: usize, height: usize) -> i32 
 	let inputs = get_inputs();
 
 	let my_matter = parse_input!(inputs[0], i32);
-	let opp_matter = parse_input!(inputs[1], i32);
+	let _opp_matter = parse_input!(inputs[1], i32);
 
 	for y in 0..height {
 		for x in 0..width {
 			let inputs = get_inputs();
 
 			grid[y][x].scrap = parse_input!(inputs[0], i32) as usize;
-			grid[y][x].owner = match parse_input!(inputs[1], i32) { 1 => Owner::Ally, 0 => Owner::Enemy, _ => Owner::Neutral };
+			grid[y][x].owner = match parse_input!(inputs[1], i32) {
+				1 => Owner::Ally, 0 => Owner::Enemy, _ => Owner::Neutral
+			};
 			grid[y][x].units = parse_input!(inputs[2], i32) as usize;
 			grid[y][x].recycler = parse_input!(inputs[3], i32) == 1;
 
@@ -178,5 +248,6 @@ fn update_input(grid: &mut Vec<Vec<Patch>>, width: usize, height: usize) -> i32 
 fn get_inputs() -> Vec<String> {
 	let mut input_line = String::new();
 	std::io::stdin().read_line(&mut input_line).unwrap();
+	eprintln!("{input_line:?}");
 	input_line.split(" ").map(|s| s.to_string()).collect()
 }
