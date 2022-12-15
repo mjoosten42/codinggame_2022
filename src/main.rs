@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, fmt};
+use std::{collections::{BTreeSet, HashSet}, fmt};
 use rand::{thread_rng, seq::SliceRandom};
 
 macro_rules! parse_input {
@@ -48,7 +48,7 @@ impl Actions {
 	}
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct Point {
 	x: usize,
 	y: usize,
@@ -129,18 +129,17 @@ fn main() {
 			for x in 0..width {
 				let patch = grid[y][x];
 
-				eprintln!("{patch:?}");
 				// Building recyclers
-				if patch.owner == Owner::Ally && !patch.in_range_of_recycler && my_matter >= 10 {
-					// if adjacent(patch.position, &grid).iter().all(|p| {
-					// 	grid[p.y][p.x].owner != Owner::Ally || grid[p.y][p.x].units == 0
-					// }) {
-						eprintln!("building");
+				if patch.can_build && !is_recycler_in_range(&grid, patch.position) && my_matter >= 10 {
+					if adjacent(patch.position, &grid).iter().all(|p| {
+						grid[p.y][p.x].units == 0 || grid[p.y][p.x].owner != Owner::Ally
+					}) {
 						BUILD!(actions, patch.position);
+						grid[patch.position.y][patch.position.x].recycler = true;
 						my_matter -= 10;
-					// }
+					}
 				}
-				
+
 				// Moving units
 				if patch.owner == Owner::Ally && patch.units > 0{
 					for _ in 0..patch.units {
@@ -150,11 +149,13 @@ fn main() {
 						});
 						if target.is_some() {
 							let point = target.unwrap();
-							grid[point.y][point.x].owner = Owner::Ally;
 							if patch.owner == Owner::Enemy {
 								grid[point.y][point.x].units = 0; // TODO
 							}
+							grid[point.y][point.x].owner = Owner::Ally;
 							MOVE!(actions, 1, patch.position, point);
+						} else {
+							eprintln!("Can't move: {}", patch.position);
 						}
 					}
 				}
@@ -162,13 +163,31 @@ fn main() {
 		}
 
 		let middle = nearest_where(&grid, Point::from(width / 2, height / 2), |p| p.can_spawn);
-		if middle.is_some() {
+		if middle.is_some() && my_matter >= 10 {
 			SPAWN!(actions, my_matter / COST, middle.unwrap());
 		}
 
 
 		actions.flush();
 	}
+}
+
+fn is_recycler_in_range(grid: &Vec<Vec<Patch>>, point: Point) -> bool {
+	near(grid, point, 3).iter().any(|p| grid[p.y][p.x].recycler)
+}
+
+fn near(grid: &Vec<Vec<Patch>>, point: Point, dist: usize) -> Vec<Point> {
+	let mut points: HashSet<Point> = vec![point; 1].into_iter().collect();
+
+	for _ in 0..dist {
+		let mut new: Vec<Point> = Vec::new();
+		for p in &points {
+			new.extend(adjacent(*p, grid).into_iter());
+		}
+		points.extend(new.into_iter());
+	}
+	
+	points.into_iter().collect()
 }
 
 fn nearest_where<F>(grid: &Vec<Vec<Patch>>, point: Point, f: F) -> Option<Point> where
@@ -248,6 +267,5 @@ fn update_input(grid: &mut Vec<Vec<Patch>>, width: usize, height: usize) -> i32 
 fn get_inputs() -> Vec<String> {
 	let mut input_line = String::new();
 	std::io::stdin().read_line(&mut input_line).unwrap();
-	eprintln!("{input_line:?}");
 	input_line.split(" ").map(|s| s.to_string()).collect()
 }
