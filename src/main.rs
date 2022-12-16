@@ -1,4 +1,4 @@
-use std::{collections::{BTreeSet, HashSet}, fmt};
+use std::{collections::{BTreeSet, HashSet}, fmt, cmp::min};
 use rand::{thread_rng, seq::SliceRandom};
 
 macro_rules! parse_input {
@@ -7,19 +7,19 @@ macro_rules! parse_input {
 
 macro_rules! MOVE {
 	($actions:expr, $amount:expr, $from:expr, $to:expr) => {
-		$actions.add(format!("MOVE {} {} {} {} {}", $amount, $from.x, $from.y, $to.x, $to.y));
+		$actions.add(format!("MOVE {} {} {} {} {}", $amount, $from.x, $from.y, $to.x, $to.y))
 	};
 }
 
 macro_rules! BUILD {
 	($actions:expr, $pos:expr) => {
-		$actions.add(format!("BUILD {} {}", $pos.x, $pos.y));
+		$actions.add(format!("BUILD {} {}", $pos.x, $pos.y))
 	};
 }
 
 macro_rules! SPAWN {
 	($actions:expr, $amount:expr, $pos:expr) => {
-		$actions.add(format!("SPAWN {} {} {}", $amount, $pos.x, $pos.y));
+		$actions.add(format!("SPAWN {} {} {}", $amount, $pos.x, $pos.y))
 	};
 }
 
@@ -114,7 +114,7 @@ impl fmt::Display for Patch {
 }
 
 fn main() {
-	const COST: i32 = 10;
+	const COST: usize = 10;
 	let inputs = get_inputs();
 	let width = parse_input!(inputs[0], usize);
 	let height = parse_input!(inputs[1], usize);
@@ -124,56 +124,116 @@ fn main() {
 	loop {
 		let mut actions: Actions = Actions::new();
 		let mut my_matter = update_input(&mut grid, width, height);
-
+	
+		let mut units: Vec<Point> = Vec::new();
+		let mut ally_tiles: Vec<Patch> = Vec::new();
+		let mut ally_tiles_in_range_of_recycler = 0;
+	
+		// Map data
 		for y in 0..height {
 			for x in 0..width {
-				let patch = grid[y][x];
+				let patch = &mut grid[y][x];
 
-				// Building recyclers
-				if patch.can_build && !is_recycler_in_range(&grid, patch.position) && my_matter >= 10 {
-					if adjacent(patch.position, &grid).iter().all(|p| {
-						grid[p.y][p.x].units == 0 || grid[p.y][p.x].owner != Owner::Ally
-					}) {
-						BUILD!(actions, patch.position);
-						grid[patch.position.y][patch.position.x].recycler = true;
-						my_matter -= 10;
+				// Update scrap
+				if patch.in_range_of_recycler {
+					patch.scrap -= 1;
+					if patch.scrap == 0 {
+						patch.can_build = false;
+						patch.can_spawn = false;
+						patch.owner = Owner::Neutral;
+						patch.units = 0;
+					}
+				}
+				// Save unit positions
+				if patch.owner == Owner::Ally {
+					ally_tiles.push(*patch);
+					if patch.units > 0 {
+						units.push(patch.position);
+				 	}
+					if patch.in_range_of_recycler {
+						ally_tiles_in_range_of_recycler += 1;
 					}
 				}
 
-				// Moving units
-				if patch.owner == Owner::Ally && patch.units > 0{
-					for _ in 0..patch.units {
+			}
+		}
 
-						let target = nearest_where(&grid, patch.position, |p| {
-							p.owner != Owner::Ally && !p.recycler
-						});
-						if target.is_some() {
-							let point = target.unwrap();
-							if patch.owner == Owner::Enemy {
-								grid[point.y][point.x].units = 0; // TODO
-							}
-							grid[point.y][point.x].owner = Owner::Ally;
-							MOVE!(actions, 1, patch.position, point);
-						} else {
-							eprintln!("Can't move: {}", patch.position);
-						}
+		ally_tiles.sort_by(|lhs, rhs| {
+			let lhs_sum = adjacent(&grid, lhs.position).into_iter()
+				.fold(lhs.scrap, |sum, p| {
+					sum + grid[p.y][p.x].scrap
+				});
+			let rhs_sum = adjacent(&grid, rhs.position).into_iter()
+				.fold(rhs.scrap, |sum, p| {
+					sum + grid[p.y][p.x].scrap
+				});
+			lhs_sum.cmp(&rhs_sum)
+		});
+
+		ally_tiles = ally_tiles.into_iter().rev().collect();
+
+		// Moving units
+		for unit in units {
+			for _ in 0..grid[unit.y][unit.x].units {
+
+				let target = nearest_where(&grid, unit, |p| {
+					p.owner != Owner::Ally && !p.recycler
+				});
+
+				if target.is_none() {
+					break ;
+				}
+
+				let point = target.unwrap();
+				let patch = &mut grid[unit.y][unit.x];
+				if patch.owner == Owner::Enemy {
+					if patch.units > 0 {
+						patch.units -= 1;
+					} else {
+						patch.owner = Owner::Ally;
+					}
+				} else {
+					patch.owner = Owner::Ally;
+				}
+
+				MOVE!(actions, 1, unit, point);
+			}
+		}
+
+		// Building recyclers
+		let free_tiles = ally_tiles.len() - ally_tiles_in_range_of_recycler;
+		let build_budget = free_tiles - min(free_tiles, 20);
+		for _ in 0..(build_budget / COST) {
+			for patch in &ally_tiles {
+				let nearby = near(&grid, patch.position, 2);
+			
+				if my_matter >= COST && patch.can_build && !nearby.iter().any(|p| grid[p.y][p.x].recycler) {
+					let adj = adjacent(&grid, patch.position);
+				
+					if adj.iter().all(|p| grid[p.y][p.x].units == 0 || grid[p.y][p.x].owner != Owner::Ally) {
+						BUILD!(actions, patch.position);
+						grid[patch.position.y][patch.position.x].recycler = true;
+						my_matter -= COST;
+						break ;
 					}
 				}
 			}
 		}
+	
+		let middle = nearest_where(&grid, Point::from(width / 2, height / 2), |p| {
+			p.can_spawn && p.scrap > 0
+		});
+	
+		if middle.is_some() {
+			let point = middle.unwrap();
 
-		let middle = nearest_where(&grid, Point::from(width / 2, height / 2), |p| p.can_spawn);
-		if middle.is_some() && my_matter >= 10 {
-			SPAWN!(actions, my_matter / COST, middle.unwrap());
+			if my_matter >= COST {
+				SPAWN!(actions, my_matter / COST, point);
+			}
 		}
-
 
 		actions.flush();
 	}
-}
-
-fn is_recycler_in_range(grid: &Vec<Vec<Patch>>, point: Point) -> bool {
-	near(grid, point, 3).iter().any(|p| grid[p.y][p.x].recycler)
 }
 
 fn near(grid: &Vec<Vec<Patch>>, point: Point, dist: usize) -> Vec<Point> {
@@ -182,7 +242,7 @@ fn near(grid: &Vec<Vec<Patch>>, point: Point, dist: usize) -> Vec<Point> {
 	for _ in 0..dist {
 		let mut new: Vec<Point> = Vec::new();
 		for p in &points {
-			new.extend(adjacent(*p, grid).into_iter());
+			new.extend(adjacent(grid, *p).into_iter());
 		}
 		points.extend(new.into_iter());
 	}
@@ -203,7 +263,7 @@ fn nearest_where<F>(grid: &Vec<Vec<Patch>>, point: Point, f: F) -> Option<Point>
 			if f(patch) {
 				return Some(edge.clone())
 			}
-			let nb = adjacent(*edge, grid);
+			let nb = adjacent_movable(grid, *edge);
 			for point in nb {
 				if !visited.contains(&point) {
 					new.push(point);
@@ -216,10 +276,12 @@ fn nearest_where<F>(grid: &Vec<Vec<Patch>>, point: Point, f: F) -> Option<Point>
 	None
 }
 
-fn adjacent(point: Point, grid: &Vec<Vec<Patch>>) -> Vec<Point> {
-	let adj = adjacent_tiles(point);
-	
-	adj.iter().filter_map(|tile| {
+fn adjacent_movable(grid: &Vec<Vec<Patch>>, point: Point) -> Vec<Point> {
+	adjacent(grid, point).into_iter().filter(|p| grid[p.y][p.x].scrap > 0).collect()
+}
+
+fn adjacent(grid: &Vec<Vec<Patch>>, point: Point) -> Vec<Point> {
+	adjacent_tiles(point).into_iter().filter_map(|tile| {
 		let row = grid.iter().nth(tile.1 as usize)?;
 		row.iter().nth(tile.0 as usize)?;
 		Some(Point { x: tile.0 as usize, y: tile.1 as usize })
@@ -238,7 +300,7 @@ fn adjacent_tiles(point: Point) -> Vec<(i32, i32)> {
 }
 
 // Input
-fn update_input(grid: &mut Vec<Vec<Patch>>, width: usize, height: usize) -> i32 {
+fn update_input(grid: &mut Vec<Vec<Patch>>, width: usize, height: usize) -> usize {
 	let inputs = get_inputs();
 
 	let my_matter = parse_input!(inputs[0], i32);
@@ -261,7 +323,7 @@ fn update_input(grid: &mut Vec<Vec<Patch>>, width: usize, height: usize) -> i32 
 		}
 	}
 
-	my_matter
+	my_matter as usize
 }
 
 fn get_inputs() -> Vec<String> {
