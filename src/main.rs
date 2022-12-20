@@ -156,7 +156,7 @@ impl Patch {
 }
 
 const COST: usize = 10;
-const RECYCLER_MIN: usize = 40;
+const RECYCLER_MIN: usize = 35;
 
 fn main() {
 	let inputs = get_inputs();
@@ -272,11 +272,10 @@ fn main() {
 			get(&grid, *lhs).scrap_total.cmp(&get(&grid, *rhs).scrap_total).reverse()
 		});
 
-		// Building recyclers
+		// Building recyclers on efficient patches
 		for tile in &ally_tiles {
 			let patch = get(&grid, *tile).clone();
-		
-			// Efficient patches
+
 			let nearby_recycler = near(&grid, *tile, 2).iter().any(|p| get(&grid, *p).recycler);
 			if ally_matter >= COST && patch.can_build && patch.scrap >= 5 && patch.scrap_total >= RECYCLER_MIN && !nearby_recycler {
 				let patch = get_mut(&mut grid, *tile);
@@ -297,13 +296,14 @@ fn main() {
 			let patch = get_mut(&mut grid, pos);
 
 			if patch.can_spawn {
-				let amount = enemy - patch.units;
+				let mut amount = enemy - patch.units;
+				let available = ally_matter / COST;
 			
-				if ally_matter >= COST {
-					let spawning = ally_matter / (amount * COST);
-					SPAWN!(actions, spawning, pos);
-					ally_matter -= spawning * COST;
-					patch.units += spawning;
+				amount = amount.clamp(0, available);
+				if amount > 0 {
+					SPAWN!(actions, amount, pos);
+					ally_matter -= amount * COST;
+					patch.units += amount;
 				}
 			}
 		
@@ -315,6 +315,7 @@ fn main() {
 			// }
 		}
 
+		// TODO: spawn for exploration
 		if ally_matter >= COST {
 			let target = nearest_where(&grid, center, |p| p.can_spawn, enemy_gravity);
 
@@ -382,7 +383,7 @@ fn nearest_where<F>(grid: &Vec<Vec<Patch>>, point: IVec2, f: F, enemy: IVec2) ->
 			if f(patch) {
 				answer.push(*edge);
 			}
-			let nb = adjacent(grid, *edge);
+			let nb = adjacent_movable(grid, *edge);
 			for point in nb {
 				if !visited.contains(&point) {
 					new.push(point);
@@ -410,7 +411,11 @@ fn adjacent(grid: &Vec<Vec<Patch>>, point: IVec2) -> Vec<IVec2> {
 		let row = grid.iter().nth(tile.1 as usize)?;
 		row.iter().nth(tile.0 as usize)?;
 		Some(IVec2 { x: tile.0, y: tile.1 })
-	}).filter(|p| get(grid, *p).scrap > 0 && !get(grid, *p).recycler).collect()
+	}).collect()
+}
+
+fn adjacent_movable(grid: &Vec<Vec<Patch>>, point: IVec2) -> Vec<IVec2> {
+	adjacent(grid, point).into_iter().filter(|p| get(grid, *p).scrap > 0 && !get(grid, *p).recycler).collect()
 }
 
 // Input
