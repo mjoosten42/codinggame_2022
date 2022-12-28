@@ -196,7 +196,6 @@ impl Player {
 }
 
 const COST: i32 = 10;
-const RECYCLER_MIN: i32 = 30;
 
 fn main() {
 	let inputs = get_inputs();
@@ -280,14 +279,10 @@ fn main() {
 			(lhs.tile - enemy.gravity).abs().cmp(&((rhs.tile - enemy.gravity).abs()))
 		});
 
-		// let center = (ally.gravity + enemy.gravity) / 2;
-		// let perp = (center - ally.gravity).perp();
-		// let frontline = line(center + perp, center - perp);
-
 		// Moving units
 		for unit in ally.units {
 			let allies = get(&grid, unit).units;
-
+				
 			for _ in 0..allies {
 				let target = nearest_where(&grid, unit, |p| p.owner != Owner::Ally, enemy.gravity);
 
@@ -306,13 +301,17 @@ fn main() {
 			}
 		}
 
-		// Blocking enemy units
+		// TODO: detect stalemate, defending with units
+
+		// Blocking enemy units with recyclers
 		for border_tile in &ally.border {
 			let tile = border_tile.tile;
 			let enemies = border_tile.enemies;
 			let patch = get_mut(&mut grid, tile);
 			
-			if ally.matter >= COST && patch.can_build &&  enemies > 0 {
+			if ally.matter >= COST && patch.can_build 
+				&& enemies > 0
+			{
 				BUILD!(actions, tile);
 			
 				patch.can_build = false;
@@ -324,12 +323,12 @@ fn main() {
 
 		// Building recyclers on efficient patches
 		for tile in &ally.tiles {
+			let adj: Vec<Patch> = adjacent_movable(&grid, *tile).into_iter().map(|p| get(&grid, p).clone()).collect();
 			let patch = get(&grid, *tile);
 
-			if ally.matter >= COST
-				&& patch.can_build
-				&& patch.scrap >= 5
-				&& patch.scrap_total >= RECYCLER_MIN
+			if ally.matter >= COST && patch.can_build
+				&& patch.scrap_total > COST
+				&& adj.iter().all(|p| p.scrap > patch.scrap && p.scrap > 1)
 				&& !near(&grid, *tile, 2).iter().any(|p| get(&grid, *p).recycler)
 			{
 				let patch = get_mut(&mut grid, *tile);
