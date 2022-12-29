@@ -196,7 +196,7 @@ impl Player {
 }
 
 const COST: i32 = 10;
-const RATIO: i32 = 8;
+const RATIO: i32 = 15;
 
 fn main() {
 	let inputs = get_inputs();
@@ -329,16 +329,14 @@ fn main() {
 
 			let tiles_cost = 1 + adj.iter().filter(|a| a.scrap <= patch.scrap).count() as i32;
 			let efficiency = patch.scrap_total / tiles_cost;
+			let gain = adj.iter().fold(patch.scrap, |sum, p| sum + p.scrap.clamp(0, patch.scrap));
 
 			if ally.matter >= COST && patch.can_build
-				&& patch.scrap_total > COST
-				&& efficiency >= COST
+				&& gain > COST
+				&& efficiency >= RATIO
 				&& !near(&grid, *tile, 2).iter().any(|p| get(&grid, *p).recycler)
 			{
 				let patch = get_mut(&mut grid, *tile);
-			
-				eprintln!("{}", patch.scrap_total);
-				eprintln!("{tiles_cost}");
 			
 				BUILD!(actions, tile);
 			
