@@ -239,23 +239,11 @@ impl Patch {
 	}
 }
 
-#[derive(Debug)]
-struct Border {
-	tile: IVec2,
-	enemies: i32,
-}
-
-// impl Border {
-// 	fn new() -> Self {
-// 		Self { tile: IVec2::ZERO, enemies: 0 }
-// 	}
-// }
-
 struct Player {
 	matter: i32,
 	tiles: Vec<IVec2>,
 	units: Vec<IVec2>,
-	border: Vec<Border>,
+	border: Vec<(IVec2, i32)>,
 	gravity: IVec2,
 }
 
@@ -272,7 +260,7 @@ impl Player {
 }
 
 const COST: i32 = 10;
-const RATIO: i32 = 15;
+const RATIO: i32 = 18;
 
 fn main() {
 	let inputs = get_inputs();
@@ -323,20 +311,17 @@ fn main() {
 
 		// Adjacency dependant
 		for tile in &ally.tiles {
-			let adj: Vec<Patch> = adjacent_movable(&grid, *tile).into_iter().map(|p| get(&grid, p).clone()).collect();
-			let patch = get_mut(&mut grid, *tile);
+			let adj: Vec<Patch> = adjacent_movable(&grid, *tile).into_iter().map(|p| get(&grid, &p).clone()).collect();
+			let patch = get_mut(&mut grid, tile);
 		
 			// Calculate recyclable scrap
 			patch.scrap_total = adj.iter().fold(patch.scrap, |sum, p| sum + p.scrap);
 
-			// Mark border tiles
-			let borders: Vec<&Patch> = adj.iter().filter(|p| p.owner != patch.owner).collect();
-			if !borders.is_empty() {
-				let opposed = borders.iter().fold(0, |sum, p| sum + p.units);
+			// Mark defensive tiles
+			if adj.iter().any(|a| a.owner != Owner::Ally) {
+				let enemies = adj.iter().filter(|p| p.owner == Owner::Enemy).fold(0, |sum, p| sum + p.units);
 			
-				let border = Border { tile: *tile, enemies: opposed };
-			
-				ally.border.push(border);
+				ally.border.push((*tile, enemies));
 			}
 		}
 
@@ -350,23 +335,22 @@ fn main() {
 
 		// Sort allied tiles by total scrap for recyclers
 		ally.tiles.sort_by(|lhs, rhs| {
-			get(&grid, *lhs).scrap_total.cmp(&get(&grid, *rhs).scrap_total).reverse()
+			get(&grid, lhs).scrap_total.cmp(&get(&grid, rhs).scrap_total).reverse()
 		});
 
 		// Sort allied border tiles by distance to frontline
 		ally.border.sort_by(|lhs, rhs| {
-			frontline.distance(lhs.tile.as_f32()).partial_cmp(&frontline.distance(rhs.tile.as_f32())).unwrap_or(std::cmp::Ordering::Equal)
+			frontline.distance(lhs.0.as_f32()).partial_cmp(&frontline.distance(rhs.0.as_f32())).unwrap_or(std::cmp::Ordering::Equal)
 		});
 
 		// Sort allied units by distance to frontline
 		ally.units.sort_by(|lhs, rhs| {
 			frontline.distance(lhs.as_f32()).partial_cmp(&frontline.distance(rhs.as_f32())).unwrap_or(std::cmp::Ordering::Equal)
 		});
-
+	
 		// Defending
-		for border_tile in ally.border.iter().filter(|b| b.enemies > 0) {
-			let tile = border_tile.tile;
-			let enemies = border_tile.enemies;
+		for (tile, enemies) in ally.border.iter().filter(|b| b.1 > 0) {
+			let enemies = *enemies;
 			let patch = get_mut(&mut grid, tile);
 			let mut spawned = 0;
 
@@ -382,7 +366,7 @@ fn main() {
 			}
 
 			if ally.matter >= COST && patch.can_spawn {
-				spawned = enemies.clamp(0, ally.matter / COST);
+				spawned = enemies.clamp(1, ally.matter / COST);
 			
 				SPAWN!(actions, spawned, tile);
 			
@@ -396,8 +380,8 @@ fn main() {
 
 		// Building recyclers on efficient patches
 		for tile in &ally.tiles {
-			let adj: Vec<Patch> = adjacent_movable(&grid, *tile).into_iter().map(|p| get(&grid, p).clone()).collect();
-			let patch = get(&grid, *tile);
+			let adj: Vec<Patch> = adjacent_movable(&grid, *tile).into_iter().map(|p| get(&grid, &p).clone()).collect();
+			let patch = get(&grid, tile);
 
 			let tiles_cost = 1 + adj.iter().filter(|a| a.scrap <= patch.scrap).count() as i32;
 			let efficiency = patch.scrap_total / tiles_cost;
@@ -406,9 +390,9 @@ fn main() {
 			if ally.matter >= COST && patch.can_build
 				&& gain > COST
 				&& efficiency >= RATIO
-				&& !near(&grid, *tile, 2).iter().any(|p| get(&grid, *p).recycler)
+				&& !near(&grid, *tile, 2).iter().any(|p| get(&grid, p).recycler)
 			{
-				let patch = get_mut(&mut grid, *tile);
+				let patch = get_mut(&mut grid, tile);
 			
 				BUILD!(actions, tile);
 			
@@ -419,37 +403,29 @@ fn main() {
 			}
 		}
 
-		// Exploration
-		for border in ally.border.iter().filter(|p| p.enemies == 0) {
-			let tile = border.tile;
-			let adj = adjacent_movable(&grid, tile);
-			let patch = get_mut(&mut grid, tile);
-
+		// Spawning on border tiles
+		for (tile, _) in &ally.border {
+			let patch = get(&grid, tile);
+		
 			if ally.matter >= COST && patch.can_spawn
-				&& patch.units == 0
-				&& !adj.iter().any(|a| get(&grid, *a).units > 0)
-			{			
+				&& patch.units == 0 
+				&& !unreachable.contains(tile)
+			{
 				SPAWN!(actions, 1, tile);
 				ally.matter -= COST;
+
 			}
 		}
 
-		// Leftover matter
-		if ally.matter >= COST && !ally.border.is_empty() {
-			let amount = ally.matter / COST;
-
-			SPAWN!(actions, amount, ally.border.first().unwrap().tile);
-		}
-
 		// Moving units
-		for unit in ally.units {
+		for unit in &ally.units {
 			let allies = get(&grid, unit).units;
 
 			for _ in 0..allies {
 				let targets = nearest_where(&grid, unit, |p| p.owner != Owner::Ally);
 
 				if !targets.is_empty() {
-					let target = *targets.iter().min_by(|lhs, rhs| {
+					let target = targets.iter().min_by(|lhs, rhs| {
 						frontline.distance(lhs.as_f32()).partial_cmp(&frontline.distance(rhs.as_f32())).unwrap_or(std::cmp::Ordering::Equal)
 					}).unwrap();
 
@@ -466,7 +442,7 @@ fn main() {
 							patch.owner = Owner::Ally;
 						}
 					} else {
-						unreachable.insert(unit);
+						unreachable.insert(*unit);
 					}
 
 					MOVE!(actions, 1, unit, target);
@@ -482,11 +458,11 @@ fn main() {
 	}
 }
 
-fn get<'a>(grid: &'a Vec<Vec<Patch>>, point: IVec2) -> &'a Patch {
+fn get<'a>(grid: &'a Vec<Vec<Patch>>, point: &IVec2) -> &'a Patch {
 	&grid[point.y as usize][point.x as usize]
 }
 
-fn get_mut<'a>(grid: &'a mut Vec<Vec<Patch>>, point: IVec2) -> &'a mut Patch {
+fn get_mut<'a>(grid: &'a mut Vec<Vec<Patch>>, point: &IVec2) -> &'a mut Patch {
 	&mut grid[point.y as usize][point.x as usize]
 }
 
@@ -505,18 +481,18 @@ fn near(grid: &Vec<Vec<Patch>>, point: IVec2, dist: usize) -> Vec<IVec2> {
 	points.into_iter().collect()
 }
 
-fn nearest_where<F>(grid: &Vec<Vec<Patch>>, point: IVec2, f: F) -> Vec<IVec2> where
+fn nearest_where<F>(grid: &Vec<Vec<Patch>>, point: &IVec2, f: F) -> Vec<IVec2> where
 	F: Fn(&Patch) -> bool {
 	
-	let mut edges = vec![point];
-	let mut visited: BTreeSet<IVec2> = vec![point].into_iter().collect();
+	let mut edges = vec![point.clone()];
+	let mut visited: BTreeSet<IVec2> = vec![point.clone()].into_iter().collect();
 	let mut answer: Vec<IVec2> = Vec::new();
 	
 	while !edges.is_empty() && answer.is_empty() {
 		let mut new: Vec<IVec2> = Vec::new();
 
 		for edge in &edges {
-			let patch = get(grid, *edge);
+			let patch = get(grid, edge);
 		
 			if f(patch) {
 				answer.push(*edge);
@@ -556,7 +532,7 @@ fn adjacent(grid: &Vec<Vec<Patch>>, point: IVec2) -> Vec<IVec2> {
 }
 
 fn adjacent_movable(grid: &Vec<Vec<Patch>>, point: IVec2) -> Vec<IVec2> {
-	adjacent(grid, point).into_iter().filter(|p| get(grid, *p).scrap > 0 && !get(grid, *p).recycler).collect()
+	adjacent(grid, point).into_iter().filter(|p| get(grid, p).scrap > 0 && !get(grid, p).recycler).collect()
 }
 
 // Input
