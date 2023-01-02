@@ -1,4 +1,4 @@
-use std::{collections::{BTreeSet, HashSet}, cmp::max, fmt, ops::{Add, AddAssign, Div, Sub, DivAssign}};
+use std::{collections::{BTreeSet, HashSet}, cmp::max, fmt, ops::{Add, AddAssign, Div, Sub, DivAssign, Mul}};
 use rand::{thread_rng, seq::SliceRandom};
 use chrono::Utc;
 
@@ -69,8 +69,12 @@ impl IVec2 {
 		IVec2 { x: x, y: y }
 	}
 
-	fn abs(self: &Self) -> i32 {
+	fn abs(self) -> i32 {
 		self.x.abs() + self.y.abs()
+	}
+
+	fn as_f32(self) -> Vec2 {
+		Vec2 { x: self.x as f32, y: self.y as f32 }
 	}
 }
 
@@ -121,6 +125,68 @@ impl fmt::Display for IVec2 {
 impl fmt::Debug for IVec2 {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		write!(f, "[{}, {}]", self.x, self.y)
+	}
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Vec2 {
+	x: f32,
+	y: f32,
+}
+
+impl Vec2 {
+	fn dot(self, other: &Self) -> f32 {
+		self.x * other.x + self.y + other.y
+	}
+
+	fn perp(self) -> Self {
+		Self { x: self.y, y: -self.x }
+	}
+
+	fn len(self) -> f32 {
+		f32::sqrt(self.x * self.x + self.y * self.y)
+	}
+
+	fn normalize(self) -> Self {
+		let inverse = 1.0 / self.len();
+
+		Self { x: self.x * inverse, y: self.y * inverse }
+	}
+}
+
+impl Sub for Vec2 {
+	type Output = Vec2;
+
+	fn sub(self, rhs: Self) -> Self::Output {
+		Vec2 { x: self.x - rhs.x, y: self.y - rhs.y }
+	}
+}
+
+impl Mul<f32> for Vec2 {
+	type Output = Vec2;
+
+	fn mul(self, rhs: f32) -> Self::Output {
+		Vec2 { x: self.x * rhs, y: self.y * rhs }
+	}
+}
+
+impl fmt::Display for Vec2 {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "[{}, {}]", self.x, self.y)
+	}
+}
+
+#[derive(Debug)]
+struct Line {
+	origin: Vec2,
+	direction: Vec2,
+}
+
+impl Line {
+	fn distance(self: &Self, point: Vec2) -> f32 {
+		let pa =  self.origin - point;
+		let shortest = pa - self.direction * (pa.dot(&self.direction));
+		shortest.len()
 	}
 }
 
@@ -269,6 +335,9 @@ fn main() {
 			}
 		}
 
+		let center = (ally.gravity + enemy.gravity) / 2;
+		let frontline = Line { origin: center.as_f32(), direction: (enemy.gravity - ally.gravity).as_f32().perp().normalize() };
+
 		// Sort allied tiles by total scrap for recyclers
 		ally.tiles.sort_by(|lhs, rhs| {
 			get(&grid, *lhs).scrap_total.cmp(&get(&grid, *rhs).scrap_total).reverse()
@@ -282,12 +351,15 @@ fn main() {
 		// Moving units
 		for unit in ally.units {
 			let allies = get(&grid, unit).units;
-				
-			for _ in 0..allies {
-				let target = nearest_where(&grid, unit, |p| p.owner != Owner::Ally, enemy.gravity);
 
-				if target.is_some() {
-					let target = target.unwrap();
+			for _ in 0..allies {
+				let targets = nearest_where(&grid, unit, |p| p.owner != Owner::Ally);
+
+				if !targets.is_empty() {
+					let target = *targets.iter().min_by(|lhs, rhs| {
+						frontline.distance(lhs.as_f32()).partial_cmp(&frontline.distance(rhs.as_f32())).unwrap()
+					}).unwrap();
+				
 					let patch = get_mut(&mut grid, target);
 
 					if patch.units > 0 {
@@ -390,7 +462,7 @@ fn near(grid: &Vec<Vec<Patch>>, point: IVec2, dist: usize) -> Vec<IVec2> {
 	points.into_iter().collect()
 }
 
-fn nearest_where<F>(grid: &Vec<Vec<Patch>>, point: IVec2, f: F, enemy: IVec2) -> Option<IVec2> where
+fn nearest_where<F>(grid: &Vec<Vec<Patch>>, point: IVec2, f: F) -> Vec<IVec2> where
 	F: Fn(&Patch) -> bool {
 	
 	let mut edges = vec![point];
@@ -417,9 +489,7 @@ fn nearest_where<F>(grid: &Vec<Vec<Patch>>, point: IVec2, f: F, enemy: IVec2) ->
 		edges = new;
 	}
 
-	answer.into_iter().min_by(|lhs, rhs| {
-		(enemy - *lhs).abs().cmp(&(enemy - *rhs).abs())
-	})
+	answer
 }
 
 fn adjacent(grid: &Vec<Vec<Patch>>, point: IVec2) -> Vec<IVec2> {
