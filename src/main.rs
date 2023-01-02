@@ -69,6 +69,10 @@ impl IVec2 {
 		IVec2 { x: x, y: y }
 	}
 
+	fn abs(self) -> i32 {
+		self.x.abs() + self.y.abs()
+	}
+
 	fn as_f32(self) -> Vec2 {
 		Vec2 { x: self.x as f32 + 0.5, y: self.y as f32 + 0.5 }
 	}
@@ -260,7 +264,7 @@ impl Player {
 }
 
 const COST: i32 = 10;
-const RATIO: i32 = 18;
+const MAX: i32 = 25;
 
 fn main() {
 	let inputs = get_inputs();
@@ -378,6 +382,9 @@ fn main() {
 			}
 		}
 
+		let distance = (enemy.gravity - ally.gravity).abs();
+		let ratio = MAX - distance;
+
 		// Building recyclers on efficient patches
 		for tile in &ally.tiles {
 			let adj: Vec<Patch> = adjacent_movable(&grid, *tile).into_iter().map(|p| get(&grid, &p).clone()).collect();
@@ -389,7 +396,7 @@ fn main() {
 
 			if ally.matter >= COST && patch.can_build
 				&& gain > COST
-				&& efficiency >= RATIO
+				&& efficiency >= ratio
 				&& !near(&grid, *tile, 2).iter().any(|p| get(&grid, p).recycler)
 			{
 				let patch = get_mut(&mut grid, tile);
@@ -419,6 +426,16 @@ fn main() {
 
 		// Moving units
 		for unit in &ally.units {
+			if unreachable.contains(unit) {
+				continue;
+			}
+		
+			let can_reach_enemy = !nearest_where(&grid, unit, |p| p.owner == Owner::Enemy).is_empty();
+
+			if !can_reach_enemy {
+				unreachable.insert(*unit);
+			}
+		
 			let allies = get(&grid, unit).units;
 
 			for _ in 0..allies {
@@ -429,20 +446,14 @@ fn main() {
 						frontline.distance(lhs.as_f32()).partial_cmp(&frontline.distance(rhs.as_f32())).unwrap_or(std::cmp::Ordering::Equal)
 					}).unwrap();
 
-					let reachable = !nearest_where(&grid, unit, |p| {
-						p.owner == Owner::Enemy || unreachable.contains(&p.position)
-					}).is_empty();
-
 					let patch = get_mut(&mut grid, target);
 
-					if reachable {
+					if can_reach_enemy {
 						if patch.units > 0 {
 							patch.units -= 1;
 						} else {
 							patch.owner = Owner::Ally;
 						}
-					} else {
-						unreachable.insert(*unit);
 					}
 
 					MOVE!(actions, 1, unit, target);
