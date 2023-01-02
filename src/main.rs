@@ -173,7 +173,7 @@ struct Player {
 	recyclers: i32,
 	tiles: Vec<IVec2>,
 	units: HashSet<IVec2>,
-	border: Vec<(IVec2, i32)>,
+	border: Vec<(IVec2, i32, i32)>,
 	gravity: IVec2,
 }
 
@@ -256,9 +256,10 @@ fn main() {
 
 			// Mark border tiles
 			if adj.iter().any(|p| p.owner != patch.owner) {
-				let enemies = adj.iter().filter(|p| p.owner == Owner::Enemy).fold(0, |sum, p| sum + p.units);
+				let enemies = adj.iter().filter(|p| p.owner != Owner::Enemy).fold(0, |sum, p| sum + p.units);
+				let count = adj.iter().filter(|p| p.owner != Owner::Enemy).count() as i32;
 			
-				ally.border.push((*tile, enemies));
+				ally.border.push((*tile, count, enemies));
 			}
 		}
 
@@ -268,14 +269,14 @@ fn main() {
 		});
 
 		// Sort allied border tiles by distance to enemy
-		ally.border.sort_by(|(lhs, _), (rhs, _)| {
+		ally.border.sort_by(|(lhs, _, _), (rhs, _, _)| {
 			(*lhs - enemy.gravity).abs().cmp(&((*rhs - enemy.gravity).abs()))
 		});
 
 		timestamps.push(Utc::now().timestamp_millis());
 
 		// Defending
-		for (tile, e) in ally.border.iter().filter(|b| b.1 > 0) {
+		for (tile, count, e) in ally.border.iter().filter(|b| b.1 > 0) {
 			let enemies = *e;
 			let patch = get_mut(&mut grid, tile);
 			
@@ -288,7 +289,7 @@ fn main() {
 				ally.matter -= COST;
 			}
 
-			if ally.matter >= COST && patch.can_spawn {
+			if ally.matter >= COST && patch.can_spawn && *count == 1 {
 				let amount = enemies.clamp(1, ally.matter / COST);
 			
 				SPAWN!(actions, amount, tile);
@@ -327,7 +328,7 @@ fn main() {
 		timestamps.push(Utc::now().timestamp_millis());
 
 		// Spawning on border tiles
-		for (tile, e) in &ally.border {
+		for (tile, _, e) in &ally.border {
 			let enemies = *e;
 			let patch = get_mut(&mut grid, tile);
 
