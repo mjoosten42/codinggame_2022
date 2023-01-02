@@ -69,12 +69,8 @@ impl IVec2 {
 		IVec2 { x: x, y: y }
 	}
 
-	fn abs(self) -> i32 {
-		self.x.abs() + self.y.abs()
-	}
-
 	fn as_f32(self) -> Vec2 {
-		Vec2 { x: self.x as f32, y: self.y as f32 }
+		Vec2 { x: self.x as f32 + 0.5, y: self.y as f32 + 0.5 }
 	}
 }
 
@@ -154,6 +150,14 @@ impl Vec2 {
 	}
 }
 
+impl Add for Vec2 {
+	type Output = Vec2;
+
+	fn add(self, rhs: Self) -> Self::Output {	
+		Vec2 { x: self.x + rhs.x, y: self.y + rhs.y }
+	}
+}
+
 impl Sub for Vec2 {
 	type Output = Vec2;
 
@@ -167,6 +171,14 @@ impl Mul<f32> for Vec2 {
 
 	fn mul(self, rhs: f32) -> Self::Output {
 		Vec2 { x: self.x * rhs, y: self.y * rhs }
+	}
+}
+
+impl Div<f32> for Vec2 {
+	type Output = Vec2;
+
+	fn div(self, rhs: f32) -> Self::Output {
+		Vec2 { x: self.x / rhs, y: self.y / rhs }
 	}
 }
 
@@ -241,9 +253,8 @@ struct Border {
 
 struct Player {
 	matter: i32,
-	recyclers: i32,
 	tiles: Vec<IVec2>,
-	units: HashSet<IVec2>,
+	units: Vec<IVec2>,
 	border: Vec<Border>,
 	gravity: IVec2,
 }
@@ -252,9 +263,8 @@ impl Player {
 	fn new() -> Self {
 		Self {
 			matter: 0,
-			recyclers: 0,
 			tiles: Vec::new(),
-			units: HashSet::new(),
+			units: Vec::new(),
 			border: Vec::new(),
 			gravity: IVec2::ZERO,
 		}
@@ -274,6 +284,8 @@ fn main() {
 			Patch::from(i as i32, j as i32)
 		}).collect()
 	}).collect();
+
+	let mut unreachable: HashSet<IVec2> = HashSet::new();
 
 	loop {
 		let mut ally: Player = Player::new();
@@ -304,19 +316,11 @@ fn main() {
 
 				// Mark units
 				if patch.units > 0 {
-					player.units.insert(patch.position);
-				}
-
-				// Count recyclers
-				if patch.recycler {
-					player.recyclers += 1;
+					player.units.push(patch.position);
 				}
 			}
 		}
 
-		ally.gravity = ally.units.iter().fold(IVec2::ZERO, |sum, point| sum + *point) / max(ally.units.len() as i32, 1);
-		enemy.gravity = enemy.units.iter().fold(IVec2::ZERO, |sum, point| sum + *point) / max(enemy.units.len() as i32, 1);
-	
 		// Adjacency dependant
 		for tile in &ally.tiles {
 			let adj: Vec<Patch> = adjacent_movable(&grid, *tile).into_iter().map(|p| get(&grid, p).clone()).collect();
@@ -336,54 +340,38 @@ fn main() {
 			}
 		}
 
-		let center = (ally.gravity + enemy.gravity) / 2;
-		let frontline = Line { origin: center.as_f32(), direction: (enemy.gravity - ally.gravity).as_f32().perp().normalize() };
+		ally.gravity = ally.units.iter().fold(IVec2::ZERO, |sum, point| sum + *point) / max(ally.units.len() as i32, 1);
+		enemy.gravity = enemy.units.iter().fold(IVec2::ZERO, |sum, point| sum + *point) / max(enemy.units.len() as i32, 1);
+	
+		let frontline = Line {
+			origin: (ally.gravity.as_f32() + enemy.gravity.as_f32()) / 2.0,
+			direction: (enemy.gravity.as_f32() - ally.gravity.as_f32()).perp().normalize()
+		};
 
 		// Sort allied tiles by total scrap for recyclers
 		ally.tiles.sort_by(|lhs, rhs| {
 			get(&grid, *lhs).scrap_total.cmp(&get(&grid, *rhs).scrap_total).reverse()
 		});
 
-		// Sort allied border tiles by distance to enemy
+		// Sort allied border tiles by distance to frontline
 		ally.border.sort_by(|lhs, rhs| {
-			(lhs.tile - enemy.gravity).abs().cmp(&((rhs.tile - enemy.gravity).abs()))
+			frontline.distance(lhs.tile.as_f32()).partial_cmp(&frontline.distance(rhs.tile.as_f32())).unwrap_or(std::cmp::Ordering::Equal)
 		});
 
-		// Moving units
-		for unit in ally.units {
-			let allies = get(&grid, unit).units;
+		// Sort allied units by distance to frontline
+		ally.units.sort_by(|lhs, rhs| {
+			frontline.distance(lhs.as_f32()).partial_cmp(&frontline.distance(rhs.as_f32())).unwrap_or(std::cmp::Ordering::Equal)
+		});
 
-			for _ in 0..allies {
-				let targets = nearest_where(&grid, unit, |p| p.owner != Owner::Ally);
-
-				if !targets.is_empty() {
-					let target = *targets.iter().min_by(|lhs, rhs| {
-						frontline.distance(lhs.as_f32()).partial_cmp(&frontline.distance(rhs.as_f32())).unwrap()
-					}).unwrap();
-				
-					let patch = get_mut(&mut grid, target);
-
-					if patch.units > 0 {
-						patch.units -= 1;
-					} else {
-						patch.owner = Owner::Ally;
-					}
-
-					MOVE!(actions, 1, unit, target);
-				}		
-			}
-		}
-
-		// TODO: detect stalemate, defending with units
-
-		// Blocking enemy units with recyclers
-		for border_tile in &ally.border {
+		// Defending
+		for border_tile in ally.border.iter().filter(|b| b.enemies > 0) {
 			let tile = border_tile.tile;
 			let enemies = border_tile.enemies;
 			let patch = get_mut(&mut grid, tile);
-			
-			if ally.matter >= COST && patch.can_build 
-				&& enemies > 0
+			let mut spawned = 0;
+
+			if ally.matter >= COST && patch.can_build
+				&& enemies > 1
 			{
 				BUILD!(actions, tile);
 			
@@ -391,6 +379,18 @@ fn main() {
 				patch.can_spawn = false;
 				patch.recycler = true;
 				ally.matter -= COST;
+			}
+
+			if ally.matter >= COST && patch.can_spawn {
+				spawned = enemies.clamp(0, ally.matter / COST);
+			
+				SPAWN!(actions, spawned, tile);
+			
+				ally.matter -= spawned * COST;
+			}
+
+			if enemies > spawned {
+				patch.units -= enemies - spawned;
 			}
 		}
 
@@ -419,20 +419,58 @@ fn main() {
 			}
 		}
 
-		// Spawning on border tiles
-		for border in &ally.border {
+		// Exploration
+		for border in ally.border.iter().filter(|p| p.enemies == 0) {
 			let tile = border.tile;
-			let enemies = border.enemies;
+			let adj = adjacent_movable(&grid, tile);
 			let patch = get_mut(&mut grid, tile);
 
-			if ally.matter >= COST && patch.can_spawn {
-				let available = ally.matter / COST;
-				let diff: i32 = enemies - patch.units;
-			
-				let amount = diff.clamp(1, available);
-			
-				SPAWN!(actions, amount, tile);
-				ally.matter -= amount * COST;
+			if ally.matter >= COST && patch.can_spawn
+				&& patch.units == 0
+				&& !adj.iter().any(|a| get(&grid, *a).units > 0)
+			{			
+				SPAWN!(actions, 1, tile);
+				ally.matter -= COST;
+			}
+		}
+
+		// Leftover matter
+		if ally.matter >= COST && !ally.border.is_empty() {
+			let amount = ally.matter / COST;
+
+			SPAWN!(actions, amount, ally.border.first().unwrap().tile);
+		}
+
+		// Moving units
+		for unit in ally.units {
+			let allies = get(&grid, unit).units;
+
+			for _ in 0..allies {
+				let targets = nearest_where(&grid, unit, |p| p.owner != Owner::Ally);
+
+				if !targets.is_empty() {
+					let target = *targets.iter().min_by(|lhs, rhs| {
+						frontline.distance(lhs.as_f32()).partial_cmp(&frontline.distance(rhs.as_f32())).unwrap_or(std::cmp::Ordering::Equal)
+					}).unwrap();
+
+					let reachable = !nearest_where(&grid, unit, |p| {
+						p.owner == Owner::Enemy || unreachable.contains(&p.position)
+					}).is_empty();
+
+					let patch = get_mut(&mut grid, target);
+
+					if reachable {
+						if patch.units > 0 {
+							patch.units -= 1;
+						} else {
+							patch.owner = Owner::Ally;
+						}
+					} else {
+						unreachable.insert(unit);
+					}
+
+					MOVE!(actions, 1, unit, target);
+				}		
 			}
 		}
 
