@@ -1,4 +1,4 @@
-use std::{collections::{BTreeSet, HashSet}, cmp::max, fmt, ops::{Add, AddAssign, Div, Sub, DivAssign}};
+use std::{collections::{BTreeSet, HashSet}, cmp::max, fmt, ops::{Add, AddAssign, Div, Sub, DivAssign, Mul}};
 use rand::{thread_rng, seq::SliceRandom};
 use chrono::Utc;
 
@@ -72,6 +72,10 @@ impl IVec2 {
 	fn abs(self: &Self) -> i32 {
 		self.x.abs() + self.y.abs()
 	}
+
+	fn as_f32(self) -> Vec2 {
+		Vec2 { x: self.x as f32, y: self.y as f32 }
+	}
 }
 
 impl Add for IVec2 {
@@ -124,6 +128,102 @@ impl fmt::Debug for IVec2 {
 	}
 }
 
+#[derive(Clone, Copy, Debug)]
+struct Vec2 {
+	x: f32,
+	y: f32,
+}
+
+impl Vec2 {
+	const ZERO: Self = Self { x: 0.0, y: 0.0 };
+
+	fn dot(self, other: &Self) -> f32 {
+		self.x * other.x + self.y * other.y
+	}
+
+	fn perp(self) -> Self {
+		Self { x: self.y, y: -self.x }
+	}
+
+	fn len(self) -> f32 {
+		f32::sqrt(self.x * self.x + self.y * self.y)
+	}
+
+	fn normalize(self) -> Self {
+		let inverse = 1.0 / self.len();
+
+		Self { x: self.x * inverse, y: self.y * inverse }
+	}
+
+	fn round(self: &mut Self) {
+		self.x = self.x.round();
+		self.y = self.y.round();
+	}
+}
+
+impl Add for Vec2 {
+	type Output = Vec2;
+
+	fn add(self, rhs: Self) -> Self::Output {	
+		Vec2 { x: self.x + rhs.x, y: self.y + rhs.y }
+	}
+}
+
+impl AddAssign for Vec2 {
+	fn add_assign(&mut self, rhs: Self) {
+		self.x += rhs.x;
+		self.y += rhs.y;
+	}
+}
+
+impl Sub for Vec2 {
+	type Output = Vec2;
+
+	fn sub(self, rhs: Self) -> Self::Output {
+		Vec2 { x: self.x - rhs.x, y: self.y - rhs.y }
+	}
+}
+
+impl Mul<f32> for Vec2 {
+	type Output = Vec2;
+
+	fn mul(self, rhs: f32) -> Self::Output {
+		Vec2 { x: self.x * rhs, y: self.y * rhs }
+	}
+}
+
+impl Div<f32> for Vec2 {
+	type Output = Vec2;
+
+	fn div(self, rhs: f32) -> Self::Output {
+		Vec2 { x: self.x / rhs, y: self.y / rhs }
+	}
+}
+
+impl fmt::Display for Vec2 {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "[{}, {}]", self.x, self.y)
+	}
+}
+
+#[derive(Debug)]
+struct Line {
+	origin: Vec2,
+	direction: Vec2,
+}
+
+impl Line {
+	fn new() -> Self {
+		Self { origin: Vec2::ZERO, direction: Vec2::ZERO }
+	}
+
+	fn distance(self: &Self, point: Vec2) -> f32 {
+		let pa =  point - self.origin;
+		let shortest = pa - self.direction * pa.dot(&self.direction);
+		shortest.len()
+	}
+}
+
 #[derive(Copy, Clone, Debug, PartialEq)]
 enum Owner {
 	Ally,
@@ -133,7 +233,7 @@ enum Owner {
 
 #[derive(Copy, Clone, Debug)]
 struct Patch {
-	position: IVec2,
+	pos: IVec2,
 	scrap_total: i32,
 
 	scrap: i32,
@@ -148,7 +248,7 @@ struct Patch {
 impl Patch {
 	fn from(x: i32, y: i32) -> Self {
 		Patch {
-			position: IVec2::new(x, y),
+			pos: IVec2::new(x, y),
 			scrap_total: 0,
 			scrap: 0,
 			owner: Owner::Neutral,
@@ -161,19 +261,33 @@ impl Patch {
 	}
 }
 
+#[derive(Clone, Debug)]
+struct Border {
+	pos: IVec2,
+	allies: i32,
+	enemies: i32,
+	supporting: bool,
+	tiles: Vec<IVec2>,
+}
 
-// impl Border {
-// 	fn new() -> Self {
-// 		Self { tile: IVec2::ZERO, enemies: 0 }
-// 	}
-// }
+impl Border {
+	fn new(pos: &IVec2) -> Self {
+		Self {
+			pos: *pos,
+			allies: 0,
+			enemies: 0,
+			supporting: false,
+			tiles: Vec::new(),
+		}
+	}
+}
 
 struct Player {
 	matter: i32,
 	recyclers: i32,
 	tiles: Vec<IVec2>,
-	units: HashSet<IVec2>,
-	border: Vec<(IVec2, i32, i32)>,
+	units: Vec<IVec2>,
+	border: Vec<Border>,
 	gravity: IVec2,
 }
 
@@ -183,7 +297,7 @@ impl Player {
 			matter: 0,
 			recyclers: 0,
 			tiles: Vec::new(),
-			units: HashSet::new(),
+			units: Vec::new(),
 			border: Vec::new(),
 			gravity: IVec2::ZERO,
 		}
@@ -204,11 +318,15 @@ fn main() {
 		}).collect()
 	}).collect();
 
+	let mut frontline = Line::new();
+	let mut first_turn = true;
+	let mut trench: Vec<IVec2> = Vec::new();
+
 	loop {
-		let mut ally: Player = Player::new();
-		let mut enemy: Player = Player::new();
-		let mut neutral: Player = Player::new();
-		let mut actions: Actions = Actions::new();
+		let mut ally = Player::new();
+		let mut enemy = Player::new();
+		let mut neutral = Player::new();
+		let mut actions = Actions::new();
 
 		let matter = update_input(&mut grid, width, height);
 	
@@ -222,6 +340,10 @@ fn main() {
 			for x in 0..width {
 				let patch = &mut grid[y][x];
 			
+				if patch.scrap == 0 {
+					continue;
+				}
+			
 				let player = match patch.owner {
 					Owner::Ally => &mut ally,
 					Owner::Enemy => &mut enemy,
@@ -229,11 +351,11 @@ fn main() {
 				};
 
 				// Mark owned tiles
-				player.tiles.push(patch.position);
+				player.tiles.push(patch.pos);
 
 				// Mark units
-				if patch.units > 0 {
-					player.units.insert(patch.position);
+				for _ in 0..patch.units {
+					player.units.push(patch.pos);
 				}
 
 				// Count recyclers
@@ -248,7 +370,7 @@ fn main() {
 	
 		// Adjacency dependant
 		for tile in &ally.tiles {
-			let adj: Vec<Patch> = adjacent_movable(&grid, *tile).into_iter().map(|p| get(&grid, &p).clone()).collect();
+			let adj: Vec<Patch> = adjacent_movable(&grid, tile).into_iter().map(|p| get(&grid, &p).clone()).collect();
 			let patch = get_mut(&mut grid, tile);
 		
 			// Calculate recyclable scrap
@@ -256,11 +378,25 @@ fn main() {
 
 			// Mark border tiles
 			if adj.iter().any(|p| p.owner != patch.owner) {
-				let enemies = adj.iter().filter(|p| p.owner != Owner::Enemy).fold(0, |sum, p| sum + p.units);
-				let count = adj.iter().filter(|p| p.owner != Owner::Enemy).count() as i32;
+				let mut border = Border::new(tile);
 			
-				ally.border.push((*tile, count, enemies));
+				let tiles = adj.iter().filter(|p| p.owner == Owner::Enemy);
+
+				border.tiles = tiles.clone().map(|tile| tile.pos).collect();
+				border.enemies = tiles.fold(0, |sum, p| sum + p.units);
+
+				if border.tiles.len() == 1 {
+					border.supporting = adjacent_movable(&grid, &border.tiles[0]).into_iter()
+						.filter(|t| *t != *tile)
+							.any(|t| get(&grid, &t).owner == Owner::Ally);
+				}
+
+				ally.border.push(border);
 			}
+		}
+
+		for a in &ally.border {
+			eprintln!("{a:?}");
 		}
 
 		// Sort allied tiles by total scrap for recyclers
@@ -268,20 +404,62 @@ fn main() {
 			get(&grid, lhs).scrap_total.cmp(&get(&grid, rhs).scrap_total).reverse()
 		});
 
-		// Sort allied border tiles by distance to enemy
-		ally.border.sort_by(|(lhs, _, _), (rhs, _, _)| {
-			(*lhs - enemy.gravity).abs().cmp(&((*rhs - enemy.gravity).abs()))
+		// Sort allied border tiles by units difference, then distance to enemy
+		ally.border.sort_by(|lhs, rhs| {
+			let mut cmp = (&lhs.enemies - &lhs.allies).cmp(&(&rhs.enemies - &rhs.allies)).reverse();
+
+			if cmp == std::cmp::Ordering::Equal {
+				cmp = (lhs.pos - enemy.gravity).abs().cmp(&((rhs.pos - enemy.gravity).abs()));
+			}
+			
+			cmp
 		});
 
+		// Sort allied units by distance to frontline
+		ally.units.sort_by(|lhs, rhs| {
+			let first = bfs(&grid, lhs, |tile| trench.contains(&tile.pos)).1;
+			let second = bfs(&grid, rhs, |tile| trench.contains(&tile.pos)).1;
+			
+			first.cmp(&second)
+		});
+	
 		timestamps.push(Utc::now().timestamp_millis());
 
+		if first_turn {
+			first_turn = false;
+
+			let mut center = (ally.gravity.as_f32() + enemy.gravity.as_f32()) / 2.0;
+
+			if ((ally.gravity.x - enemy.gravity.x) % 2).abs() == 1 || ((ally.gravity.y - enemy.gravity.y) % 2).abs() == 1 {
+				center += (ally.gravity.as_f32() - center).normalize() / 2.0;
+				center.round();
+			}
+
+			frontline.origin = center;
+			frontline.direction = (ally.gravity.as_f32() - enemy.gravity.as_f32()).perp().normalize();
+
+			for tile in &neutral.tiles {
+				if frontline.distance(tile.as_f32()) < 0.55 {
+					trench.push(*tile);
+				}
+			}
+		
+			timestamps.push(Utc::now().timestamp_millis());
+		}
+
+		// Remove claimed trench tiles
+		trench.retain(|tile| !ally.tiles.contains(tile));
+		
+		eprintln!("{trench:?}");
+	
+		timestamps.push(Utc::now().timestamp_millis());
+	
 		// Defending
-		for (tile, count, e) in ally.border.iter().filter(|b| b.1 > 0) {
-			let enemies = *e;
-			let patch = get_mut(&mut grid, tile);
+		for border in ally.border.iter_mut().filter(|b| b.enemies > 0 && b.tiles.len() == 1) {
+			let patch = get_mut(&mut grid, &border.pos);
 			
-			if ally.matter >= COST && patch.can_build && enemies > 1 {
-				BUILD!(actions, tile);
+			if ally.matter >= COST && patch.can_build && border.enemies > 1 {
+				BUILD!(actions, border.pos);
 			
 				patch.can_build = false;
 				patch.can_spawn = false;
@@ -289,12 +467,16 @@ fn main() {
 				ally.matter -= COST;
 			}
 
-			if ally.matter >= COST && patch.can_spawn && *count == 1 {
-				let amount = enemies.clamp(1, ally.matter / COST);
+			if ally.matter >= COST && patch.can_spawn{
+				let diff = border.enemies - border.allies;
+				let amount = diff.clamp(0, ally.matter / COST);
 			
-				SPAWN!(actions, amount, tile);
+				if amount > 0 {
+					SPAWN!(actions, amount, border.pos);
 
-				ally.matter -= amount * COST;
+					border.allies += amount;
+					ally.matter -= amount * COST;
+				}
 			}
 		}
 
@@ -302,7 +484,7 @@ fn main() {
 
 		// Building recyclers on efficient patches
 		for tile in &ally.tiles {
-			let adj: Vec<Patch> = adjacent_movable(&grid, *tile).into_iter().map(|p| get(&grid, &p).clone()).collect();
+			let adj: Vec<Patch> = adjacent_movable(&grid, tile).into_iter().map(|p| get(&grid, &p).clone()).collect();
 			let patch = get(&grid, tile);
 
 			let tiles_cost = 1 + adj.iter().filter(|a| a.scrap <= patch.scrap).count() as i32;
@@ -328,49 +510,91 @@ fn main() {
 		timestamps.push(Utc::now().timestamp_millis());
 
 		// Spawning on border tiles
-		for (tile, _, e) in &ally.border {
-			let enemies = *e;
-			let patch = get_mut(&mut grid, tile);
+		for border in ally.border.iter_mut() {
+			let patch = get(&grid, &border.pos);
 
 			if ally.matter >= COST && patch.can_spawn {
-				let amount = enemies.clamp(1, ally.matter / COST);
-			
-				SPAWN!(actions, amount, tile);
+				SPAWN!(actions, 1, border.pos);
+	
+				border.allies += 1;
+				ally.matter -= COST;
 
-				ally.matter -= amount * COST;
 			}
 		}
 
 		timestamps.push(Utc::now().timestamp_millis());
-	
+
 		let mut claimed: HashSet<IVec2> = HashSet::new();
 
-		// Moving units
-		for unit in &ally.units {
-			let allies = get(&grid, unit).units;
-				
-			for _ in 0..allies {
-				let mut targets = nearest_where(&grid, unit, |p| {
-					p.owner != Owner::Ally && !claimed.contains(&p.position)
-				});
+		for unit in &ally.units {		
+			let border = ally.border.iter_mut().find(|border| border.pos == *unit);
+		
+			if border.is_some() {
+				let border = border.unwrap();
 
-				if targets.is_empty() {
-					targets = nearest_where(&grid, unit, |p| {
-						p.owner != Owner::Ally
-					});
+				if border.enemies > border.allies && border.tiles.len() == 1 && !border.supporting {
+					eprintln!("{border:?}");
+				
+					border.allies += 1;
+					continue;
 				}
 
-				if !targets.is_empty() {	
-					let target = targets.iter().min_by(|&lhs, &rhs| {
-						(*lhs - enemy.gravity).abs().cmp(&((*rhs - enemy.gravity).abs()))
-					}).unwrap();
+				if border.supporting {
+					MOVE!(actions, 1, unit, border.tiles.first().unwrap());
+					continue;
+				}
+			}
 
-					claimed.insert(*target);
-				
+			let targets = bfs(&grid, unit, |tile| {
+				trench.contains(&tile.pos) && !claimed.contains(&tile.pos)
+			}).0;
+
+			if !targets.is_empty() {
+				let target = targets.first().unwrap();
+			
+				eprintln!("{unit} -> {target}");
+
+				claimed.insert(*target);
+
+				if *unit != *target {
 					MOVE!(actions, 1, unit, target);
 				}
 			}
 		}
+
+		timestamps.push(Utc::now().timestamp_millis());
+
+		// for unit in &ally.units {
+		// 	let allies = get(&grid, unit).units;
+				
+		// 	for _ in 0..allies {
+		// 		let mut targets = bfs(&grid, unit, |p| {
+		// 			p.owner != Owner::Ally && !claimed.contains(&p.pos)
+		// 		});
+
+		// 		if targets.is_empty() {
+		// 			targets = bfs(&grid, unit, |p| {
+		// 				p.owner != Owner::Ally
+		// 			});
+		// 		}
+
+		// 		if !targets.is_empty() {	
+		// 			let target = targets.iter().min_by(|&lhs, &rhs| {
+		// 				(*lhs - enemy.gravity).abs().cmp(&((*rhs - enemy.gravity).abs()))
+		// 			}).unwrap();
+
+		// 			let patch = get_mut(&mut grid, target);
+
+		// 			if patch.units > 0 {
+		// 				patch.units -= 1;
+		// 			} else {
+		// 				claimed.insert(*target);
+		// 			}
+				
+		// 			MOVE!(actions, 1, unit, target);
+		// 		}
+		// 	}
+		// }
 
 		timestamps.push(Utc::now().timestamp_millis());
 
@@ -401,7 +625,7 @@ fn near(grid: &Vec<Vec<Patch>>, point: IVec2, dist: usize) -> Vec<IVec2> {
 		let mut new: Vec<IVec2> = Vec::new();
 	
 		for p in &points {
-			new.extend(adjacent(grid, *p).into_iter());
+			new.extend(adjacent(grid, p).into_iter());
 		}
 		points.extend(new.into_iter());
 	}
@@ -409,13 +633,14 @@ fn near(grid: &Vec<Vec<Patch>>, point: IVec2, dist: usize) -> Vec<IVec2> {
 	points.into_iter().collect()
 }
 
-fn nearest_where<F>(grid: &Vec<Vec<Patch>>, point: &IVec2, f: F) -> Vec<IVec2>
+fn bfs<F>(grid: &Vec<Vec<Patch>>, point: &IVec2, f: F) -> (Vec<IVec2>, i32)
 where
 	F: Fn(&Patch) -> bool {
 	
 	let mut edges = vec![point.clone()];
 	let mut visited: BTreeSet<IVec2> = vec![point.clone()].into_iter().collect();
 	let mut answer: Vec<IVec2> = Vec::new();
+	let mut i = -1;
 	
 	while !edges.is_empty() && answer.is_empty() {
 		let mut new: Vec<IVec2> = Vec::new();
@@ -426,7 +651,7 @@ where
 			if f(patch) {
 				answer.push(*edge);
 			}
-			let nb = adjacent_movable(grid, *edge);
+			let nb = adjacent_movable(grid, edge);
 			for point in nb {
 				if !visited.contains(&point) {
 					new.push(point);
@@ -435,12 +660,13 @@ where
 			visited.insert(*edge);
 		}
 		edges = new;
+		i += 1;
 	}
 
-	answer
+	(answer, i)
 }
 
-fn adjacent(grid: &Vec<Vec<Patch>>, point: IVec2) -> Vec<IVec2> {
+fn adjacent(grid: &Vec<Vec<Patch>>, point: &IVec2) -> Vec<IVec2> {
 	let width = grid[0].len() as i32;
 	let height = grid.len() as i32;
 
@@ -460,7 +686,7 @@ fn adjacent(grid: &Vec<Vec<Patch>>, point: IVec2) -> Vec<IVec2> {
 	}).collect()
 }
 
-fn adjacent_movable(grid: &Vec<Vec<Patch>>, point: IVec2) -> Vec<IVec2> {
+fn adjacent_movable(grid: &Vec<Vec<Patch>>, point: &IVec2) -> Vec<IVec2> {
 	adjacent(grid, point).into_iter().filter(|p| get(grid, p).scrap > 0 && !get(grid, p).recycler).collect()
 }
 
